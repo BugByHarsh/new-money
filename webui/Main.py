@@ -8204,7 +8204,7 @@ def _render_clip_approval_workflow(params, audio_ready):
                 st.caption(f"{candidate['provider']} · {candidate['duration']} seconds")
                 _, preview_col, _ = st.columns([1, 2, 1]) 
                 with preview_col:
-                    st.video(candidate["url"])
+                    st.video(candidate["url"], width=320)
 
             approved = (st.session_state.get("clip_approved_fingerprint") == fingerprint
                         and st.session_state.get("clip_approved_selection") == selected
