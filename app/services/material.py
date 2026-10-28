@@ -382,10 +382,16 @@ def search_videos_pexels(
                 continue
             duration = v.get("duration")
             # check if video has desired minimum duration
+            # Pexels stock search has a fixed source-duration window:
+            # strictly longer than 3 seconds and strictly shorter than 20 seconds.
+            # max_clip_duration is applied later by the renderer and must not
+            # accidentally become the search minimum.
             if (
                 isinstance(duration, bool)
                 or not isinstance(duration, (int, float))
                 or not math.isfinite(duration)
+                or duration <= 3
+                or duration >= 20
                 or duration < minimum_duration
             ):
                 continue
@@ -449,6 +455,106 @@ def search_videos_pexels(
         )
 
     return []
+
+
+def resolve_pexels_video_url(
+    page_url: str,
+    video_aspect: VideoAspect = VideoAspect.portrait,
+) -> MaterialInfo:
+    """Resolve a Pexels video page URL to a downloadable rendition.
+
+    Only public Pexels video-page URLs are accepted; arbitrary URLs are rejected.
+    The asset must satisfy the same strict 3 < duration < 20 seconds rule used by
+    the Pexels candidate search.
+    """
+    parsed = urlsplit(str(page_url or "").strip())
+    hostname = (parsed.hostname or "").lower()
+    if (
+        parsed.scheme != "https"
+        or not (hostname == "pexels.com" or hostname.endswith(".pexels.com"))
+        or parsed.username
+        or parsed.password
+    ):
+        raise ValueError("Paste a valid HTTPS Pexels video page URL.")
+
+    match = re.search(r"/video/[^/]*?(\d+)(?:/|$)", parsed.path)
+    if not match:
+        # Some Pexels URLs use /videos/ rather than /video/.
+        match = re.search(r"/videos?/[^/]*?(\d+)(?:/|$)", parsed.path)
+    if not match:
+        raise ValueError("Could not find a video ID in that Pexels URL. Paste the video's Pexels page link.")
+
+    video_id = match.group(1)
+    api_key = get_api_key("pexels_api_keys")
+    headers = {
+        "Authorization": api_key,
+        "User-Agent": "Mozilla/5.0",
+    }
+    response = trace_http_call(
+        "GET",
+        requests.get,
+        f"https://api.pexels.com/v1/videos/videos/{video_id}",
+        headers=headers,
+        proxies=config.proxy,
+        verify=_get_tls_verify(),
+        timeout=(30, 60),
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError("Pexels returned an invalid video response.")
+
+    duration = payload.get("duration")
+    if (
+        isinstance(duration, bool)
+        or not isinstance(duration, (int, float))
+        or not math.isfinite(duration)
+        or duration <= 3
+        or duration >= 20
+    ):
+        raise ValueError("That Pexels video must be longer than 3 seconds and shorter than 20 seconds.")
+
+    aspect = VideoAspect(video_aspect)
+    target_width, target_height = aspect.to_resolution()
+    renditions = []
+    for rendition in payload.get("video_files", []):
+        if not isinstance(rendition, dict):
+            continue
+        try:
+            width, height = int(rendition.get("width")), int(rendition.get("height"))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        link = rendition.get("link")
+        if (
+            isinstance(link, str)
+            and link
+            and (aspect == VideoAspect.square or _matches_video_aspect(width, height, aspect))
+            and width >= target_width
+            and height >= target_height
+        ):
+            renditions.append((width * height, rendition, width, height, link))
+    if not renditions:
+        raise ValueError(f"No Pexels rendition is available for {aspect.value} output.")
+
+    _, rendition, width, height, video_url = min(renditions, key=lambda item: item[0])
+    item = MaterialInfo()
+    item.provider = "pexels"
+    item.url = video_url
+    item.duration = duration
+    item.source_info = {
+        "provider": "pexels",
+        "search_term": "manual URL",
+        "asset_id": str(payload.get("id") or video_id),
+        "source_page": _safe_public_url(payload.get("url") or page_url),
+        "search_text": " ".join(str(value) for value in (payload.get("url", ""), payload.get("image", "")) if value),
+        "rendition": {
+            "id": str(rendition.get("id") or ""),
+            "width": width,
+            "height": height,
+        },
+        "manual_override": True,
+    }
+    return item
 
 
 def search_videos_pixabay(
