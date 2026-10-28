@@ -4,6 +4,7 @@ import io
 import math
 import os
 import random
+import re
 import tempfile
 import threading
 import time
@@ -352,7 +353,7 @@ def search_videos_pexels(
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
     }
     # Build URL
-    params = {"query": search_term, "per_page": 20}
+    params = {"query": search_term, "per_page": 80}
     if aspect != VideoAspect.square:
         params["orientation"] = aspect.name
     query_url = f"https://api.pexels.com/v1/videos/search?{urlencode(params)}"
@@ -424,6 +425,10 @@ def search_videos_pexels(
                         str(v.get("id")) if v.get("id") is not None else None
                     ),
                     "source_page": _safe_public_url(v.get("url")),
+                    "search_text": " ".join(str(part) for part in (
+                        v.get("url", ""), v.get("image", ""), 
+                        (v.get("user") or {}).get("name", "") if isinstance(v.get("user"), dict) else ""
+                    ) if part),
                     "creator": _creator_info(v.get("user")),
                     "rendition": {
                         "id": (
@@ -563,6 +568,7 @@ def search_videos_pixabay(
                             str(v.get("id")) if v.get("id") is not None else None
                         ),
                         "source_page": _safe_public_url(v.get("pageURL")),
+                        "search_text": str(v.get("tags") or ""),
                         "creator": _creator_info(
                             {
                                 "id": v.get("user_id"),
