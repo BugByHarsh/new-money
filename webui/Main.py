@@ -8091,6 +8091,23 @@ def _clip_review_terms(params):
     )
     return [(term, term) for term in terms]
 
+def _clip_candidate_relevance(item, term):
+    """Rank stock clips using provider metadata, without guessing from script scenes."""
+    source_info = getattr(item, "source_info", None)
+    source_info = source_info if isinstance(source_info, dict) else {}
+    text = str(source_info.get("search_text") or source_info.get("source_page") or "").lower()
+    query = str(term or "").lower().strip()
+    if not query or not text:
+        return 0
+    tokens = [t for t in re.findall(r"[a-z0-9]+", query) if len(t) > 2]
+    if not tokens:
+        tokens = re.findall(r"[a-z0-9]+", query)
+    if not tokens:
+        return 0
+    matched = sum(1 for token in tokens if token in text)
+    phrase_bonus = 2 if query in text else 0
+    return matched * 2 + phrase_bonus
+
 
 
 def _clip_review_fingerprint(params):
@@ -8146,8 +8163,15 @@ def _render_clip_approval_workflow(params, audio_ready):
                 except Exception as exc:
                     logger.warning(f"clip preview search failed: {type(exc).__name__}: {exc}")
                     found = []
+                # Providers return weak matches sometimes. Rank using only metadata
+                # supplied by the provider; preserve provider order for ties.
+                found = sorted(
+                    enumerate(found),
+                    key=lambda pair: (_clip_candidate_relevance(pair[1], term), -pair[0]),
+                    reverse=True,
+                )
                 candidates, seen = [], set()
-                for item in found:
+                for _, item in found:
                     url = str(getattr(item, "url", "") or "")
                     if not url or url in seen:
                         continue
