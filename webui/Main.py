@@ -8082,35 +8082,21 @@ def _stage_task_audio(audio_path, audio_bytes):
 
 
 def _clip_review_terms(params):
+    """Use only the user's explicit video keywords; never infer searches from script scenes."""
     raw = params.video_terms or []
     terms = (
         [x.strip() for x in re.split(r"[,，;；\n]+", raw) if x.strip()]
         if isinstance(raw, str)
         else [str(x).strip() for x in raw if str(x).strip()]
     )
-    sentences = [
-        x.strip()
-        for x in re.split(r"(?<=[.!?。！？])\s+|\n+", str(params.video_script or ""))
-        if x.strip()
-    ]
-
-    if params.match_materials_to_script and sentences:
-        count = min(len(sentences), len(terms)) if len(terms) >= len(sentences) else len(sentences)
-        return [
-            (s, terms[i] if len(terms) >= len(sentences) else s)
-            for i, s in enumerate(sentences[:count])
-        ]
-
-    return [(x, x) for x in (terms or sentences)]
+    return [(term, term) for term in terms]
 
 
 
 def _clip_review_fingerprint(params):
     aspect = getattr(params.video_aspect, "value", params.video_aspect)
-    payload = {"source": params.video_source, "subject": str(params.video_subject or ""),
-               "script": str(params.video_script or ""), "terms": params.video_terms or "",
-               "aspect": str(aspect or ""), "clip_duration": int(params.video_clip_duration or 5),
-               "match_script_order": bool(params.match_materials_to_script)}
+    payload = {"source": params.video_source, "terms": params.video_terms or "",
+               "aspect": str(aspect or ""), "clip_duration": int(params.video_clip_duration or 5)}
     return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
 
 
@@ -8150,9 +8136,8 @@ def _render_clip_approval_workflow(params, audio_ready):
     with st.container(border=True):
         st.markdown("### Step 2 · Preview and approve video clips")
         st.caption("Candidates stream from the provider and are not saved locally until you approve the selected clips.")
-        if not audio_ready:
-            st.warning("Approve the complete narration audio first. Clip search is disabled until then.")
-        if st.button("Find Preview Clips", key="find_preview_clips_button", use_container_width=True, disabled=not audio_ready):
+        st.caption("Searches use only the keywords you entered and the selected maximum clip duration. Narration timing and script scenes do not affect clip search.")
+        if st.button("Find Preview Clips", key="find_preview_clips_button", use_container_width=True):
             groups = []
             search_fn = material.search_videos_pexels if source == "pexels" else material.search_videos_pixabay
             for sentence, term in _clip_review_terms(params):
@@ -8173,7 +8158,7 @@ def _render_clip_approval_workflow(params, audio_ready):
                                        "url": url, "duration": int(getattr(item, "duration", 0) or 0),
                                        "asset_id": str(source_info.get("asset_id") or ""),
                                        "source_page": str(source_info.get("source_page") or "")})
-                    if len(candidates) == 3:
+                    if len(candidates) == 6:
                         break
                 groups.append({"sentence": sentence, "term": term, "candidates": candidates})
             st.session_state["clip_candidate_groups"] = groups
@@ -8188,10 +8173,10 @@ def _render_clip_approval_workflow(params, audio_ready):
         if groups and st.session_state.get("clip_candidate_fingerprint") == fingerprint:
             for i, group in enumerate(groups):
                 candidates = group.get("candidates", [])
-                st.markdown(f"**Scene {i + 1} · {group.get('sentence') or group.get('term')}**")
-                st.caption(f"Search query: {group.get('term')}")
+                st.markdown(f"**Keyword {i + 1}: {group.get('term')}**")
+                st.caption(f"Search query: {group.get('term')} · maximum clip duration: {int(params.video_clip_duration or 5)}s")
                 if not candidates:
-                    st.warning("No candidates found for this scene. Change the keywords and search again.")
+                    st.warning("No candidates found for this keyword. Edit the keyword and search again.")
                     selected.append(None)
                     continue
                 key = f"clip_candidate_choice_{fingerprint[:12]}_{i}"
@@ -8217,7 +8202,7 @@ def _render_clip_approval_workflow(params, audio_ready):
                 st.success(f"{len(st.session_state['clip_approved_paths'])} approved clips downloaded. Ready to generate.")
             elif st.button("Approve Selected Clips & Download", key="approve_selected_clips_download_button",
                            type="primary", use_container_width=True,
-                           disabled=not audio_ready or not selected or any(x is None for x in selected)):
+                           disabled=not selected or any(x is None for x in selected)):
                 review_id = st.session_state.get("clip_review_task_id") or str(uuid4())
                 # Local-source preprocessing only accepts files inside local_videos.
                 # Keep approved media there; store the review manifest in the task folder.
@@ -8235,7 +8220,7 @@ def _render_clip_approval_workflow(params, audio_ready):
                                       "sentence": group.get("sentence", ""), "search_term": group.get("term", "")})
                     except Exception as exc:
                         logger.warning(f"approved clip download failed: scene={scene_no}, error={type(exc).__name__}: {exc}")
-                        st.error(f"Scene {scene_no} could not be downloaded. No failed preview is auto-approved; replace it or try again.")
+                        st.error(f"Keyword {scene_no} clip could not be downloaded. No failed preview is auto-approved; replace it or try again.")
                         failed = True
                         break
                 if not failed and paths:
@@ -8266,7 +8251,7 @@ def _render_clip_approval_workflow(params, audio_ready):
                 elif not failed:
                     st.error("No clips were downloaded.")
         else:
-            st.caption("Find preview clips to review one candidate per scene.")
+            st.caption("Enter comma-separated video keywords, then find and choose clips for each keyword.")
 
     return bool(st.session_state.get("clip_approved_fingerprint") == fingerprint
                 and st.session_state.get("clip_approved_paths")
