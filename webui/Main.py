@@ -8153,7 +8153,7 @@ def _render_clip_approval_workflow(params, audio_ready):
     with st.container(border=True):
         st.markdown("### Step 2 · Preview and approve video clips")
         st.caption("Candidates stream from the provider and are not saved locally until you approve the selected clips.")
-        st.caption("Searches use only the keywords you entered and the selected maximum clip duration. Narration timing and script scenes do not affect clip search.")
+        st.caption("Pexels search keeps source clips longer than 3 seconds and shorter than 20 seconds. Maximum clip duration controls how much footage is used from each clip in the final video. Narration timing does not affect clip search.")
         if st.button("Find Preview Clips", key="find_preview_clips_button", use_container_width=True):
             groups = []
             search_fn = material.search_videos_pexels if source == "pexels" else material.search_videos_pixabay
