@@ -2309,13 +2309,24 @@ def download_videos(
         # during final rendering.
         if provider == "pexels":
             minimum_duration = 4
-        return _search_videos_with_cache(
+        items = _search_videos_with_cache(
             provider=provider,
             search_videos=remote_search_videos,
             search_term=search_term,
             minimum_duration=minimum_duration,
             video_aspect=video_aspect,
         )
+        if provider == "pexels":
+            # Also reapply bounds to cached results created by older versions,
+            # which may include assets of 20 seconds or longer.
+            items = [
+                item for item in items
+                if not isinstance(item.duration, bool)
+                and isinstance(item.duration, (int, float))
+                and math.isfinite(item.duration)
+                and 3 < item.duration < 20
+            ]
+        return items
 
     material_directory = config.app.get("material_directory", "").strip()
     if material_directory == "task":
