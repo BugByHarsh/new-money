@@ -477,10 +477,13 @@ def resolve_pexels_video_url(
     ):
         raise ValueError("Paste a valid HTTPS Pexels video page URL.")
 
-    match = re.search(r"/video/[^/]*?(\d+)(?:/|$)", parsed.path)
-    if not match:
-        # Some Pexels URLs use /videos/ rather than /video/.
-        match = re.search(r"/videos?/[^/]*?(\d+)(?:/|$)", parsed.path)
+    # Pexels page slugs normally end with the numeric asset ID. Parse only
+    # the final path segment so numbers earlier in a slug (for example, "4k")
+    # cannot be mistaken for the video ID.
+    last_segment = parsed.path.rstrip("/").rsplit("/", 1)[-1]
+    match = re.search(r"(\d+)$", last_segment)
+    if "/video/" not in parsed.path and "/videos/" not in parsed.path:
+        match = None
     if not match:
         raise ValueError("Could not find a video ID in that Pexels URL. Paste the video's Pexels page link.")
 
