@@ -8159,7 +8159,11 @@ def _render_clip_approval_workflow(params, audio_ready):
             search_fn = material.search_videos_pexels if source == "pexels" else material.search_videos_pixabay
             for sentence, term in _clip_review_terms(params):
                 try:
-                    found = search_fn(search_term=term, minimum_duration=max(int(params.video_clip_duration or 5), 1), video_aspect=params.video_aspect)
+                    # Pexels source search uses the fixed >3s and <20s
+                    # source-duration window; max clip duration is only used later
+                    # when building the final video.
+                    minimum_duration = 4 if source == "pexels" else max(int(params.video_clip_duration or 5), 1)
+                    found = search_fn(search_term=term, minimum_duration=minimum_duration, video_aspect=params.video_aspect)
                 except Exception as exc:
                     logger.warning(f"clip preview search failed: {type(exc).__name__}: {exc}")
                     found = []
@@ -8182,7 +8186,7 @@ def _render_clip_approval_workflow(params, audio_ready):
                                        "url": url, "duration": int(getattr(item, "duration", 0) or 0),
                                        "asset_id": str(source_info.get("asset_id") or ""),
                                        "source_page": str(source_info.get("source_page") or "")})
-                    if len(candidates) == 6:
+                    if len(candidates) == 3:
                         break
                 groups.append({"sentence": sentence, "term": term, "candidates": candidates})
             st.session_state["clip_candidate_groups"] = groups
@@ -8198,9 +8202,48 @@ def _render_clip_approval_workflow(params, audio_ready):
             for i, group in enumerate(groups):
                 candidates = group.get("candidates", [])
                 st.markdown(f"**Keyword {i + 1}: {group.get('term')}**")
-                st.caption(f"Search query: {group.get('term')} · maximum clip duration: {int(params.video_clip_duration or 5)}s")
+                st.caption(
+                    f"Search query: {group.get('term')} · "
+                    + (f"Pexels source clips: >3s and <20s · " if source == "pexels" else "")
+                    + f"maximum footage used per clip: {int(params.video_clip_duration or 5)}s"
+                )
+                if source == "pexels":
+                    custom_key = f"clip_custom_pexels_url_{fingerprint[:12]}_{i}"
+                    custom_url = st.text_input(
+                        "Or paste a Pexels video page URL",
+                        key=custom_key,
+                        placeholder="https://www.pexels.com/video/...",
+                    )
+                    if st.button(
+                        "Add custom Pexels URL",
+                        key=f"add_custom_pexels_url_{fingerprint[:12]}_{i}",
+                        use_container_width=True,
+                    ):
+                        try:
+                            custom_item = material.resolve_pexels_video_url(
+                                custom_url, video_aspect=params.video_aspect
+                            )
+                            custom_info = custom_item.source_info if isinstance(custom_item.source_info, dict) else {}
+                            custom_candidate = {
+                                "provider": "pexels (custom)",
+                                "url": custom_item.url,
+                                "duration": int(custom_item.duration),
+                                "asset_id": str(custom_info.get("asset_id") or ""),
+                                "source_page": str(custom_info.get("source_page") or custom_url),
+                                "manual_override": True,
+                            }
+                            group["candidates"] = [
+                                item for item in group.get("candidates", [])
+                                if not item.get("manual_override")
+                            ] + [custom_candidate]
+                            st.session_state["clip_candidate_groups"] = groups
+                            st.toast("Custom Pexels clip added. Select it as a candidate below.")
+                            st.rerun()
+                        except Exception as exc:
+                            logger.warning(f"custom Pexels URL rejected: {type(exc).__name__}: {exc}")
+                            st.error(str(exc))
                 if not candidates:
-                    st.warning("No candidates found for this keyword. Edit the keyword and search again.")
+                    st.warning("No candidates found for this keyword. Paste a Pexels video page URL above, or edit the keyword and search again.")
                     selected.append(None)
                     continue
                 key = f"clip_candidate_choice_{fingerprint[:12]}_{i}"
