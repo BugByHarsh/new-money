@@ -8237,6 +8237,15 @@ def _render_clip_approval_workflow(params, audio_ready):
                                 if not item.get("manual_override")
                             ] + [custom_candidate]
                             st.session_state["clip_candidate_groups"] = groups
+                            # Any changed candidate set invalidates an earlier approval,
+                            # even if the selected radio index happens to stay the same.
+                            for state_key in (
+                                "clip_approved_fingerprint",
+                                "clip_approved_paths",
+                                "clip_approved_selection",
+                                "clip_review_task_id",
+                            ):
+                                st.session_state.pop(state_key, None)
                             st.toast("Custom Pexels clip added. Select it as a candidate below.")
                             st.rerun()
                         except Exception as exc:
