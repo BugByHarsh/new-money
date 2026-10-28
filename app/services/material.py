@@ -2304,6 +2304,11 @@ def download_videos(
         minimum_duration: int,
         video_aspect: VideoAspect,
     ) -> List[MaterialInfo]:
+        # Pexels source filtering is independent of max_clip_duration: search for
+        # assets in the fixed (3, 20) second window, then cap the used footage
+        # during final rendering.
+        if provider == "pexels":
+            minimum_duration = 4
         return _search_videos_with_cache(
             provider=provider,
             search_videos=remote_search_videos,
