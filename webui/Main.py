@@ -14,6 +14,7 @@ import webbrowser
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 from uuid import UUID, uuid4
 
 import requests
@@ -8135,203 +8136,212 @@ def _audio_is_approved(params, voice_mode, uploaded_audio_file):
 
 
 def _render_clip_approval_workflow(params, audio_ready):
+    """Let users pick Pexels clips by URL, without rendering candidate previews."""
     source = params.video_source
-    if source not in ("pexels", "pixabay"):
-        if source == "coverr":
-            st.info("Preview-first review is available for Pexels and Pixabay. Coverr's MP4 URL is a download endpoint, so it is not requested for previews.")
-        elif source not in ("local",):
-            st.info("This source generates clips remotely rather than returning stock-video candidates. Provider generation or charges may happen before a preview exists.")
+    if source != "pexels":
+        # Pixabay and other sources continue through their normal automatic search
+        # path; no candidate preview/selection UI is shown for any provider.
+        return True
+
+    terms = _clip_review_terms(params)
+    if not terms:
+        st.info("Enter comma-separated video keywords to choose clips for each scene.")
         return False
 
     fingerprint = _clip_review_fingerprint(params)
     previous = st.session_state.get("clip_candidate_fingerprint")
     if previous and previous != fingerprint:
-        for key in ("clip_candidate_groups", "clip_approved_fingerprint", "clip_approved_paths", "clip_approved_selection"):
+        for key in (
+            "clip_approved_fingerprint",
+            "clip_approved_paths",
+            "clip_approved_selection",
+            "clip_review_task_id",
+        ):
             st.session_state.pop(key, None)
     st.session_state["clip_candidate_fingerprint"] = fingerprint
 
     with st.container(border=True):
-        st.markdown("### Step 2 · Preview and approve video clips")
-        st.caption("Candidates stream from the provider and are not saved locally until you approve the selected clips.")
-        st.caption("Pexels search keeps source clips longer than 3 seconds and shorter than 20 seconds. Maximum clip duration controls how much footage is used from each clip in the final video. Narration timing does not affect clip search.")
-        if st.button("Find Preview Clips", key="find_preview_clips_button", use_container_width=True):
-            groups = []
-            search_fn = material.search_videos_pexels if source == "pexels" else material.search_videos_pixabay
-            for sentence, term in _clip_review_terms(params):
+        st.markdown("### Step 2 · Choose clips on Pexels")
+        st.caption(
+            "Open the Pexels search for each keyword, copy the page URL of the video "
+            "you want, and paste it below. Leave a URL blank to use automatic Pexels "
+            "search for that scene. No candidate previews are shown."
+        )
+        url_values = []
+        for i, (sentence, term) in enumerate(terms):
+            st.markdown(f"**Scene {i + 1} · {term}**")
+            _, link_col = st.columns([1.3, 2.7], vertical_alignment="center")
+            with link_col:
+                st.link_button(
+                    "Open Pexels",
+                    f"https://www.pexels.com/search/videos/{quote(term, safe='')}/",
+                    use_container_width=True,
+                )
+            custom_url = st.text_input(
+                "Pexels video page URL",
+                key=f"clip_custom_pexels_url_{fingerprint[:12]}_{i}",
+                placeholder="https://www.pexels.com/video/...",
+                help="Optional. Paste the specific Pexels video page you want for this scene.",
+            )
+            url_values.append(custom_url.strip())
+
+        approval_signature = hashlib.sha256(
+            (fingerprint + json.dumps(url_values, ensure_ascii=False)).encode("utf-8")
+        ).hexdigest()
+        saved_paths = st.session_state.get("clip_approved_paths", [])
+        approved = (
+            st.session_state.get("clip_approved_fingerprint") == approval_signature
+            and bool(saved_paths)
+            and all(
+                os.path.isfile(item.get("path", ""))
+                and os.path.getsize(item.get("path", "")) > 0
+                for item in saved_paths
+            )
+        )
+        if st.session_state.get("clip_approved_fingerprint") and not approved:
+            # A changed keyword, aspect ratio, clip length, or pasted URL means the
+            # previous downloaded set no longer represents the current form inputs.
+            for key in (
+                "clip_approved_fingerprint",
+                "clip_approved_paths",
+                "clip_approved_selection",
+                "clip_review_task_id",
+            ):
+                st.session_state.pop(key, None)
+
+        if approved:
+            st.success(f"{len(saved_paths)} scene clips prepared. Ready to generate.")
+        if st.button(
+            "Prepare Scene Clips",
+            key="prepare_pexels_scene_clips_button",
+            type="primary",
+            use_container_width=True,
+            disabled=not audio_ready,
+        ):
+            review_id = st.session_state.get("clip_review_task_id") or str(uuid4())
+            directory = utils.storage_dir("local_videos", create=True)
+            review_directory = utils.task_dir(review_id)
+            paths = []
+            failed = False
+
+            for scene_no, ((sentence, term), custom_url) in enumerate(
+                zip(terms, url_values), start=1
+            ):
                 try:
-                    # Pexels source search uses the fixed >3s and <20s
-                    # source-duration window; max clip duration is only used later
-                    # when building the final video.
-                    minimum_duration = 4 if source == "pexels" else max(int(params.video_clip_duration or 5), 1)
-                    found = search_fn(search_term=term, minimum_duration=minimum_duration, video_aspect=params.video_aspect)
-                except Exception as exc:
-                    logger.warning(f"clip preview search failed: {type(exc).__name__}: {exc}")
-                    found = []
-                # Providers return weak matches sometimes. Rank using only metadata
-                # supplied by the provider; preserve provider order for ties.
-                found = sorted(
-                    enumerate(found),
-                    key=lambda pair: (_clip_candidate_relevance(pair[1], term), -pair[0]),
-                    reverse=True,
-                )
-                candidates, seen = [], set()
-                for _, item in found:
-                    url = str(getattr(item, "url", "") or "")
-                    if not url or url in seen:
-                        continue
-                    seen.add(url)
-                    source_info = getattr(item, "source_info", None)
-                    source_info = source_info if isinstance(source_info, dict) else {}
-                    candidates.append({"provider": str(getattr(item, "provider", source) or source),
-                                       "url": url, "duration": int(getattr(item, "duration", 0) or 0),
-                                       "asset_id": str(source_info.get("asset_id") or ""),
-                                       "source_page": str(source_info.get("source_page") or "")})
-                    if len(candidates) == 3:
-                        break
-                groups.append({"sentence": sentence, "term": term, "candidates": candidates})
-            st.session_state["clip_candidate_groups"] = groups
-            st.session_state.pop("clip_approved_fingerprint", None)
-            st.session_state.pop("clip_approved_paths", None)
-            st.session_state.pop("clip_approved_selection", None)
-            st.session_state.pop("clip_review_task_id", None)
-            st.rerun()
-
-        groups = st.session_state.get("clip_candidate_groups", [])
-        selected = []
-        if groups and st.session_state.get("clip_candidate_fingerprint") == fingerprint:
-            for i, group in enumerate(groups):
-                candidates = group.get("candidates", [])
-                st.markdown(f"**Keyword {i + 1}: {group.get('term')}**")
-                st.caption(
-                    f"Search query: {group.get('term')} · "
-                    + (f"Pexels source clips: >3s and <20s · " if source == "pexels" else "")
-                    + f"maximum footage used per clip: {int(params.video_clip_duration or 5)}s"
-                )
-                if source == "pexels":
-                    custom_key = f"clip_custom_pexels_url_{fingerprint[:12]}_{i}"
-                    custom_url = st.text_input(
-                        "Or paste a Pexels video page URL",
-                        key=custom_key,
-                        placeholder="https://www.pexels.com/video/...",
-                    )
-                    if st.button(
-                        "Add custom Pexels URL",
-                        key=f"add_custom_pexels_url_{fingerprint[:12]}_{i}",
-                        use_container_width=True,
-                    ):
-                        try:
-                            custom_item = material.resolve_pexels_video_url(
-                                custom_url, video_aspect=params.video_aspect
+                    if custom_url:
+                        item = material.resolve_pexels_video_url(
+                            custom_url, video_aspect=params.video_aspect
+                        )
+                        source_info = (
+                            item.source_info
+                            if isinstance(item.source_info, dict)
+                            else {}
+                        )
+                        provider_name = "pexels (manual)"
+                    else:
+                        found = material.search_videos_pexels(
+                            search_term=term,
+                            minimum_duration=4,
+                            video_aspect=params.video_aspect,
+                        )
+                        found = sorted(
+                            enumerate(found),
+                            key=lambda pair: (
+                                _clip_candidate_relevance(pair[1], term),
+                                -pair[0],
+                            ),
+                            reverse=True,
+                        )
+                        if not found:
+                            raise ValueError(
+                                f"No Pexels result found for scene {scene_no} "
+                                f"({term}). Paste a video URL or change the keyword."
                             )
-                            custom_info = custom_item.source_info if isinstance(custom_item.source_info, dict) else {}
-                            custom_candidate = {
-                                "provider": "pexels (custom)",
-                                "url": custom_item.url,
-                                "duration": int(custom_item.duration),
-                                "asset_id": str(custom_info.get("asset_id") or ""),
-                                "source_page": str(custom_info.get("source_page") or custom_url),
-                                "manual_override": True,
-                            }
-                            group["candidates"] = [
-                                item for item in group.get("candidates", [])
-                                if not item.get("manual_override")
-                            ] + [custom_candidate]
-                            st.session_state["clip_candidate_groups"] = groups
-                            # Any changed candidate set invalidates an earlier approval,
-                            # even if the selected radio index happens to stay the same.
-                            for state_key in (
-                                "clip_approved_fingerprint",
-                                "clip_approved_paths",
-                                "clip_approved_selection",
-                                "clip_review_task_id",
-                            ):
-                                st.session_state.pop(state_key, None)
-                            st.toast("Custom Pexels clip added. Select it as a candidate below.")
-                            st.rerun()
-                        except Exception as exc:
-                            logger.warning(f"custom Pexels URL rejected: {type(exc).__name__}: {exc}")
-                            st.error(str(exc))
-                if not candidates:
-                    st.warning("No candidates found for this keyword. Paste a Pexels video page URL above, or edit the keyword and search again.")
-                    selected.append(None)
-                    continue
-                key = f"clip_candidate_choice_{fingerprint[:12]}_{i}"
-                choice = st.radio("Choose a clip", list(range(len(candidates))),
-                                  index=min(int(st.session_state.get(key, 0) or 0), len(candidates)-1),
-                                  format_func=lambda n: f"Candidate {n+1}", horizontal=True,
-                                  key=key, label_visibility="collapsed")
-                selected.append(choice)
-                candidate = candidates[choice]
-                st.caption(f"{candidate['provider']} · {candidate['duration']} seconds")
-                _, preview_col, _ = st.columns([1, 2, 1]) 
-                with preview_col:
-                    st.video(candidate["url"], width=320)
+                        item = found[0][1]
+                        source_info = (
+                            item.source_info
+                            if isinstance(item.source_info, dict)
+                            else {}
+                        )
+                        provider_name = "pexels (automatic)"
 
-            approved = (st.session_state.get("clip_approved_fingerprint") == fingerprint
-                        and st.session_state.get("clip_approved_selection") == selected
-                        and bool(st.session_state.get("clip_approved_paths"))
-                        and all(os.path.isfile(x["path"]) and os.path.getsize(x["path"]) > 0 for x in st.session_state.get("clip_approved_paths", [])))
-            if st.session_state.get("clip_approved_fingerprint") == fingerprint and not approved:
-                for key in ("clip_approved_fingerprint", "clip_approved_paths", "clip_approved_selection"):
-                    st.session_state.pop(key, None)
-            if approved:
-                st.success(f"{len(st.session_state['clip_approved_paths'])} approved clips downloaded. Ready to generate.")
-            elif st.button("Approve Selected Clips & Download", key="approve_selected_clips_download_button",
-                           type="primary", use_container_width=True,
-                           disabled=not selected or any(x is None for x in selected)):
-                review_id = st.session_state.get("clip_review_task_id") or str(uuid4())
-                # Local-source preprocessing only accepts files inside local_videos.
-                # Keep approved media there; store the review manifest in the task folder.
-                directory = utils.storage_dir("local_videos", create=True)
-                review_directory = utils.task_dir(review_id)
-                paths, failed = [], False
-                for scene_no, (group, index) in enumerate(zip(groups, selected), start=1):
-                    candidate = group["candidates"][index]
-                    try:
-                        path = material.save_video(candidate["url"], save_dir=directory)
-                        if not path or not os.path.isfile(path) or os.path.getsize(path) <= 0:
-                            raise OSError("empty video file")
-                        paths.append({"path": path, "duration": candidate["duration"], "provider": candidate["provider"],
-                                      "asset_id": candidate.get("asset_id", ""), "source_page": candidate.get("source_page", ""),
-                                      "sentence": group.get("sentence", ""), "search_term": group.get("term", "")})
-                    except Exception as exc:
-                        logger.warning(f"approved clip download failed: scene={scene_no}, error={type(exc).__name__}: {exc}")
-                        st.error(f"Keyword {scene_no} clip could not be downloaded. No failed preview is auto-approved; replace it or try again.")
-                        failed = True
-                        break
-                if not failed and paths:
-                    try:
-                        with open(os.path.join(review_directory, "clip-review.json"), "w", encoding="utf-8") as review_file:
-                            json.dump({
-                                "status": "approved_and_downloaded",
+                    path = material.save_video(item.url, save_dir=directory)
+                    if not path or not os.path.isfile(path) or os.path.getsize(path) <= 0:
+                        raise OSError("The downloaded video file is empty.")
+                    paths.append(
+                        {
+                            "path": path,
+                            "duration": int(getattr(item, "duration", 0) or 0),
+                            "provider": provider_name,
+                            "asset_id": str(source_info.get("asset_id") or ""),
+                            "source_page": str(
+                                source_info.get("source_page") or custom_url or ""
+                            ),
+                            "sentence": sentence,
+                            "search_term": term,
+                        }
+                    )
+                    logger.info(
+                        f"prepared Pexels scene clip: scene={scene_no}, "
+                        f"keyword={term!r}, source={provider_name}"
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        f"Pexels scene preparation failed: scene={scene_no}, "
+                        f"error={type(exc).__name__}: {exc}"
+                    )
+                    st.error(
+                        f"Scene {scene_no} ({term}) could not be prepared: {exc}"
+                    )
+                    failed = True
+                    break
+
+            if not failed and paths:
+                try:
+                    with open(
+                        os.path.join(review_directory, "clip-review.json"),
+                        "w",
+                        encoding="utf-8",
+                    ) as review_file:
+                        json.dump(
+                            {
+                                "status": "prepared",
                                 "fingerprint": fingerprint,
                                 "source": source,
-                                "clips": [{
-                                    "scene": i + 1,
-                                    "sentence": item.get("sentence", ""),
-                                    "search_term": item.get("search_term", ""),
-                                    "provider": item.get("provider", source),
-                                    "asset_id": item.get("asset_id", ""),
-                                    "source_page": item.get("source_page", ""),
-                                    "duration": item.get("duration", 0),
-                                    "file": os.path.basename(item["path"]),
-                                } for i, item in enumerate(paths)],
-                            }, review_file, ensure_ascii=False, indent=2)
-                    except OSError as exc:
-                        logger.warning(f"failed to persist clip review metadata: {type(exc).__name__}: {exc}")
-                    st.session_state["clip_review_task_id"] = review_id
-                    st.session_state["clip_approved_paths"] = paths
-                    st.session_state["clip_approved_selection"] = selected
-                    st.session_state["clip_approved_fingerprint"] = fingerprint
-                    st.rerun()
-                elif not failed:
-                    st.error("No clips were downloaded.")
-        else:
-            st.caption("Enter comma-separated video keywords, then find and choose clips for each keyword.")
+                                "clips": [
+                                    {
+                                        "scene": i + 1,
+                                        "sentence": item.get("sentence", ""),
+                                        "search_term": item.get("search_term", ""),
+                                        "provider": item.get("provider", source),
+                                        "asset_id": item.get("asset_id", ""),
+                                        "source_page": item.get("source_page", ""),
+                                        "duration": item.get("duration", 0),
+                                        "file": os.path.basename(item["path"]),
+                                    }
+                                    for i, item in enumerate(paths)
+                                ],
+                            },
+                            review_file,
+                            ensure_ascii=False,
+                            indent=2,
+                        )
+                except OSError as exc:
+                    logger.warning(
+                        f"failed to persist Pexels scene metadata: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                st.session_state["clip_review_task_id"] = review_id
+                st.session_state["clip_approved_paths"] = paths
+                st.session_state["clip_approved_selection"] = list(range(len(paths)))
+                st.session_state["clip_approved_fingerprint"] = approval_signature
+                st.rerun()
 
-    return bool(st.session_state.get("clip_approved_fingerprint") == fingerprint
-                and st.session_state.get("clip_approved_paths")
-                and st.session_state.get("clip_approved_selection") is not None)
+    return bool(
+        st.session_state.get("clip_approved_fingerprint") == approval_signature
+        and st.session_state.get("clip_approved_paths")
+        and st.session_state.get("clip_approved_selection") is not None
+    )
 
 
 def _render_generation_controls(
