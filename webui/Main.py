@@ -8141,6 +8141,15 @@ def _render_clip_approval_workflow(params, audio_ready):
     if source != "pexels":
         # Pixabay and other sources continue through their normal automatic search
         # path; no candidate preview/selection UI is shown for any provider.
+        # Never let a previously prepared Pexels clip set leak into another source.
+        for key in (
+            "clip_approved_fingerprint",
+            "clip_approved_paths",
+            "clip_approved_selection",
+            "clip_review_task_id",
+            "clip_candidate_fingerprint",
+        ):
+            st.session_state.pop(key, None)
         return True
 
     terms = _clip_review_terms(params)
