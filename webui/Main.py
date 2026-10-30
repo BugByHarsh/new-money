@@ -8247,6 +8247,11 @@ def _render_clip_approval_workflow(params, audio_ready, narration_duration=None)
         if skipped_scene_count:
             st.caption(f"Skipped scenes: **{skipped_scene_count}**")
         duration_covers_narration = has_active_scenes
+        if not has_active_scenes:
+            st.warning(
+                "Every scene is set to 0 seconds. Set at least one scene above 0 seconds "
+                "to prepare video clips."
+            )
         if (
             isinstance(narration_duration, (int, float))
             and math.isfinite(narration_duration)
