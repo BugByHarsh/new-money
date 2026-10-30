@@ -8186,7 +8186,9 @@ def _render_clip_approval_workflow(params, audio_ready, narration_duration=None)
             occurrence = occurrence_counts.get(normalized_term, 0)
             occurrence_counts[normalized_term] = occurrence + 1
             scene_digest = hashlib.sha256(
-                f"{normalized_term}\\0{occurrence}".encode("utf-8")
+                json.dumps(
+                    [normalized_term, occurrence], ensure_ascii=False
+                ).encode("utf-8")
             ).hexdigest()[:16]
             scene_widget_keys.append(
                 (
