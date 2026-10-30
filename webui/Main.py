@@ -8135,7 +8135,7 @@ def _audio_is_approved(params, voice_mode, uploaded_audio_file):
     return True
 
 
-def _render_clip_approval_workflow(params, audio_ready):
+def _render_clip_approval_workflow(params, audio_ready, narration_duration=None):
     """Let users pick Pexels clips by URL, without rendering candidate previews."""
     source = params.video_source
     if source != "pexels":
@@ -8206,8 +8206,6 @@ def _render_clip_approval_workflow(params, audio_ready):
             duration_values.append(int(scene_duration))
 
         total_scene_duration = sum(duration_values)
-        cached_voice = st.session_state.get("voice_preview_audio") or {}
-        narration_duration = cached_voice.get("duration")
         if (
             isinstance(narration_duration, (int, float))
             and math.isfinite(narration_duration)
@@ -8453,7 +8451,17 @@ def _render_generation_controls(
         st.info("Approve the uploaded narration before searching for clips or generating a video.")
 
     review_source = params.video_source
-    clip_ready = _render_clip_approval_workflow(params, audio_ready)
+    narration_duration = None
+    if voice_mode == VOICE_MODE_TTS:
+        cached_voice = st.session_state.get("voice_preview_audio") or {}
+        if (
+            cached_voice.get("preview_type") == "full"
+            and _get_reusable_full_voice_preview(params, voice_mode)
+        ):
+            narration_duration = cached_voice.get("duration")
+    clip_ready = _render_clip_approval_workflow(
+        params, audio_ready, narration_duration=narration_duration
+    )
     approved_clip_payload = st.session_state.get("clip_approved_paths", []) if clip_ready and review_source in ("pexels", "pixabay") else []
     if approved_clip_payload:
         has_local_materials = True
@@ -8813,7 +8821,9 @@ def _render_generation_controls(
             # 将已上传并保存到本地的视频素材写入会话，供后续只改文案时直接复用。
             st.session_state["local_video_materials"] = persisted_local_materials
         elif (
-            params.video_source == "local" and st.session_state["local_video_materials"]
+            params.video_source == "local"
+            and st.session_state["local_video_materials"]
+            and not approved_clip_payload
         ):
             # 当用户没有重新上传文件时，复用最近一次已经保存到磁盘的本地素材列表。
             params.video_materials = []
