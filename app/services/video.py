@@ -1251,8 +1251,16 @@ def combine_videos(
                 candidate_index += 1
             if not batch:
                 break
-            for processed_clip in executor.map(process_clip_in_task_scope, batch):
+            for batch_item, processed_clip in zip(
+                batch, executor.map(process_clip_in_task_scope, batch)
+            ):
                 if processed_clip is None:
+                    if clip_durations is not None:
+                        scene_number = batch_item[0] + 1
+                        raise RuntimeError(
+                            f"Failed to process manually selected scene {scene_number}; "
+                            "the scene was not silently skipped."
+                        )
                     continue
                 processed_clips.append(processed_clip)
                 video_duration += processed_clip.duration
