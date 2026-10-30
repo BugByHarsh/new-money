@@ -8205,9 +8205,9 @@ def _render_clip_approval_workflow(params, audio_ready, narration_duration=None)
             ) and state_key not in active_widget_keys:
                 # Removed keywords are discarded, not kept in a hidden history.
                 st.session_state.pop(state_key, None)
-            elif re.fullmatch(r"clip_custom_pexels_url_[0-9a-f]{12}_\\d+", state_key):
+            elif re.fullmatch(r"clip_custom_pexels_url_[0-9a-f]{12}_\d+", state_key):
                 st.session_state.pop(state_key, None)
-            elif re.fullmatch(r"clip_custom_duration_[0-9a-f]{12}_\\d+", state_key):
+            elif re.fullmatch(r"clip_custom_duration_[0-9a-f]{12}_\d+", state_key):
                 st.session_state.pop(state_key, None)
 
         url_values = []
