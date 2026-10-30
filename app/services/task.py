@@ -1009,9 +1009,14 @@ def generate_final_videos(
             item.source_info if isinstance(item.source_info, dict) else {}
             for item in params.video_materials
         ]
-        if material_metadata and all(
+        manual_scene_flags = [
             item.get("manual_scene_duration") is True for item in material_metadata
-        ):
+        ]
+        if any(manual_scene_flags) and not all(manual_scene_flags):
+            raise ValueError(
+                "Manual scene timing metadata is incomplete; prepare the Pexels scene clips again."
+            )
+        if material_metadata and all(manual_scene_flags):
             manual_scene_durations = [
                 float(item.duration) for item in params.video_materials
             ]
