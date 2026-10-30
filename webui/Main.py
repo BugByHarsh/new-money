@@ -8135,6 +8135,18 @@ def _audio_is_approved(params, voice_mode, uploaded_audio_file):
     return True
 
 
+def _clear_clip_review_widget_inputs():
+    """Discard inputs for scene keywords that no longer exist."""
+    tracked_keys = st.session_state.pop("clip_review_widget_keys", [])
+    for key in tracked_keys:
+        st.session_state.pop(key, None)
+
+    # Clean up the older fingerprint/index-based keys left by previous versions.
+    for key in list(st.session_state.keys()):
+        if key.startswith(("clip_custom_pexels_url_", "clip_custom_duration_")):
+            st.session_state.pop(key, None)
+
+
 def _render_clip_approval_workflow(params, audio_ready, narration_duration=None):
     """Let users pick Pexels clips by URL, without rendering candidate previews."""
     source = params.video_source
@@ -8150,12 +8162,49 @@ def _render_clip_approval_workflow(params, audio_ready, narration_duration=None)
             "clip_candidate_fingerprint",
         ):
             st.session_state.pop(key, None)
+        _clear_clip_review_widget_inputs()
         return True
 
     terms = _clip_review_terms(params)
     if not terms:
         st.info("Enter comma-separated video keywords to choose clips for each scene.")
+        _clear_clip_review_widget_inputs()
+        for key in (
+            "clip_approved_fingerprint",
+            "clip_approved_paths",
+            "clip_approved_selection",
+            "clip_review_task_id",
+            "clip_candidate_fingerprint",
+        ):
+            st.session_state.pop(key, None)
         return False
+
+    # Widget identity follows the keyword itself, not the whole keyword list or
+    # the row index. Removing one keyword therefore leaves every other scene's
+    # URL and duration untouched; its own inputs are discarded immediately.
+    occurrence_counts = {}
+    scene_widget_tokens = []
+    for _sentence, term in terms:
+        normalized_term = " ".join(str(term).casefold().split())
+        occurrence_counts[normalized_term] = occurrence_counts.get(normalized_term, 0) + 1
+        token_payload = json.dumps(
+            [normalized_term, occurrence_counts[normalized_term]],
+            ensure_ascii=False,
+        )
+        scene_widget_tokens.append(
+            hashlib.sha256(token_payload.encode("utf-8")).hexdigest()[:16]
+        )
+
+    active_widget_keys = [
+        key
+        for token in scene_widget_tokens
+        for key in (f"clip_scene_url_{token}", f"clip_scene_duration_{token}")
+    ]
+    previous_widget_keys = st.session_state.get("clip_review_widget_keys", [])
+    for key in previous_widget_keys:
+        if key not in active_widget_keys:
+            st.session_state.pop(key, None)
+    st.session_state["clip_review_widget_keys"] = active_widget_keys
 
     fingerprint = _clip_review_fingerprint(params)
     previous = st.session_state.get("clip_candidate_fingerprint")
@@ -8214,7 +8263,7 @@ def _render_clip_approval_workflow(params, audio_ready, narration_duration=None)
 
         url_values = []
         duration_values = []
-        for i, (sentence, term) in enumerate(terms):
+        for i, ((sentence, term), scene_token) in enumerate(zip(terms, scene_widget_tokens)):
             st.markdown(f"**Scene {i + 1} · {term}**")
             _, link_col = st.columns([1.3, 2.7], vertical_alignment="center")
             with link_col:
