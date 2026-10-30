@@ -985,6 +985,7 @@ def combine_videos(
     source_groups: dict[str, str] | None = None,
     used_video_paths: List[str] | None = None,
     progress_callback: Callable[[float], None] | None = None,
+    clip_durations: List[float] | None = None,
 ) -> str:
     # Pydantic leaves this optional default as the string "random" unless
     # explicitly provided. Normalize it once for all downstream enum access.
@@ -1026,7 +1027,7 @@ def combine_videos(
     processed_clips = []
     subclipped_items = []
     video_duration = 0
-    for video_path in video_paths:
+    for video_index, video_path in enumerate(video_paths):
         clip = None
         try:
             clip = _open_video_clip_quietly(video_path)
@@ -1048,7 +1049,31 @@ def combine_videos(
             continue
         finally:
             close_clip(clip)
-        
+
+        if clip_durations is not None:
+            if video_index >= len(clip_durations):
+                raise ValueError("A scene duration is missing for a selected video.")
+            requested_duration = float(clip_durations[video_index])
+            if not math.isfinite(requested_duration) or requested_duration <= 0:
+                raise ValueError("Scene durations must be positive finite numbers.")
+            remaining_source_duration = requested_duration * normalized_clip_speed
+            # If a source is shorter than its requested scene duration, repeat that
+            # source from the beginning until the scene's assigned playback time is met.
+            while remaining_source_duration > 0:
+                segment_duration = min(clip_duration, remaining_source_duration)
+                subclipped_items.append(
+                    SubClippedVideoClip(
+                        file_path=video_path,
+                        start_time=0,
+                        end_time=segment_duration,
+                        width=clip_w,
+                        height=clip_h,
+                        source_file_path=video_path,
+                    )
+                )
+                remaining_source_duration -= segment_duration
+            continue
+
         start_time = 0
 
         while start_time < clip_duration:
@@ -1151,7 +1176,7 @@ def combine_videos(
                 shuffle_transition = random.choice(transition_funcs)
                 clip = shuffle_transition(clip)
 
-            if clip.duration > max_clip_duration:
+            if clip_durations is None and clip.duration > max_clip_duration:
                 clip = clip.subclipped(0, max_clip_duration)
 
             # Write each candidate clip to a unique temporary file. Threads must not
@@ -1215,9 +1240,10 @@ def combine_videos(
             while candidate_index < len(subclipped_items) and batch_duration < remaining_duration:
                 subclipped_item = subclipped_items[candidate_index]
                 source_duration = subclipped_item.end_time - subclipped_item.start_time
-                output_duration = min(
-                    max_clip_duration,
-                    source_duration / normalized_clip_speed,
+                output_duration = (
+                    source_duration / normalized_clip_speed
+                    if clip_durations is not None
+                    else min(max_clip_duration, source_duration / normalized_clip_speed)
                 )
                 batch.append((candidate_index, subclipped_item))
                 batch_duration += output_duration
@@ -1241,6 +1267,11 @@ def combine_videos(
             next_candidate_index = candidate_index
     
     # loop processed clips until the video duration covers the audio duration and the small safety margin.
+    if video_duration < required_video_duration and clip_durations is not None:
+        raise ValueError(
+            f"Selected scene durations cover {video_duration:.2f}s, but at least "
+            f"{required_video_duration:.2f}s is required to cover the narration."
+        )
     if video_duration < required_video_duration:
         logger.warning(
             f"video duration ({video_duration:.2f}s) is shorter than required duration "
