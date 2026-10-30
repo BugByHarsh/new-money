@@ -1043,6 +1043,10 @@ def combine_videos(
             ):
                 raise ValueError("invalid video duration or dimensions")
         except Exception as exc:
+            if clip_durations is not None:
+                raise RuntimeError(
+                    f"Unable to read manually selected scene {video_index + 1}: {exc}"
+                ) from exc
             logger.warning(
                 f"skipping unreadable video source: path={video_path}, error={exc}"
             )
