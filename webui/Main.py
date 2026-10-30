@@ -8476,6 +8476,40 @@ def _render_generation_controls(
             and _get_reusable_full_voice_preview(params, voice_mode)
         ):
             narration_duration = cached_voice.get("duration")
+    elif voice_mode == VOICE_MODE_UPLOAD and uploaded_audio_file:
+        try:
+            audio_digest = hashlib.sha256(
+                bytes(uploaded_audio_file.getbuffer())
+            ).hexdigest()
+            cached_upload_duration = st.session_state.get(
+                "clip_review_uploaded_audio_duration", {}
+            )
+            if cached_upload_duration.get("digest") == audio_digest:
+                narration_duration = cached_upload_duration.get("duration")
+            else:
+                temporary_audio_path = None
+                audio_clip = None
+                try:
+                    suffix = Path(uploaded_audio_file.name).suffix or ".mp3"
+                    with tempfile.NamedTemporaryFile(
+                        suffix=suffix, delete=False
+                    ) as temporary_audio:
+                        temporary_audio.write(uploaded_audio_file.getbuffer())
+                        temporary_audio_path = temporary_audio.name
+                    audio_clip = video.AudioFileClip(temporary_audio_path)
+                    narration_duration = float(audio_clip.duration)
+                finally:
+                    if audio_clip is not None:
+                        video.close_clip(audio_clip)
+                    if temporary_audio_path and os.path.exists(temporary_audio_path):
+                        os.unlink(temporary_audio_path)
+                st.session_state["clip_review_uploaded_audio_duration"] = {
+                    "digest": audio_digest,
+                    "duration": narration_duration,
+                }
+        except Exception as exc:
+            logger.debug(f"could not inspect uploaded narration duration: {exc}")
+            narration_duration = None
     clip_ready = _render_clip_approval_workflow(
         params, audio_ready, narration_duration=narration_duration
     )
