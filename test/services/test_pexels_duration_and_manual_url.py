@@ -82,6 +82,81 @@ def test_manual_pexels_page_url_resolves_to_downloadable_clip():
             config.app["pexels_api_keys"] = original_keys
 
 
+def test_manual_pexels_url_accepts_landscape_source_for_portrait_center_crop():
+    original_keys = config.app.get("pexels_api_keys")
+    config.app["pexels_api_keys"] = ["test-pexels-key"]
+    landscape_1080p = {
+        "id": 901,
+        "width": 1920,
+        "height": 1080,
+        "link": "https://videos.pexels.com/video-files/123/landscape-1080p.mp4",
+    }
+    payload = {
+        "id": 12345,
+        "duration": 8,
+        "url": "https://www.pexels.com/video/space-12345/",
+        "video_files": [
+            {
+                "width": 640,
+                "height": 360,
+                "link": "https://videos.pexels.com/video-files/123/too-small.mp4",
+            },
+            {
+                "id": 902,
+                "width": 3840,
+                "height": 2160,
+                "link": "https://videos.pexels.com/video-files/123/landscape-4k.mp4",
+            },
+            landscape_1080p,
+        ],
+    }
+    try:
+        with patch("app.services.material.requests.get", return_value=_Response(payload)):
+            item = material.resolve_pexels_video_url(
+                "https://www.pexels.com/video/space-12345/",
+                video_aspect=VideoAspect.portrait,
+            )
+        assert item.url == landscape_1080p["link"]
+        assert item.source_info["rendition"]["width"] == 1920
+        assert item.source_info["rendition"]["height"] == 1080
+    finally:
+        if original_keys is None:
+            config.app.pop("pexels_api_keys", None)
+        else:
+            config.app["pexels_api_keys"] = original_keys
+
+
+def test_manual_pexels_url_prefers_native_orientation_when_available():
+    original_keys = config.app.get("pexels_api_keys")
+    config.app["pexels_api_keys"] = ["test-pexels-key"]
+    portrait = _rendition()
+    payload = {
+        "id": 12345,
+        "duration": 8,
+        "url": "https://www.pexels.com/video/space-12345/",
+        "video_files": [
+            {
+                "width": 3840,
+                "height": 2160,
+                "link": "https://videos.pexels.com/video-files/123/landscape-4k.mp4",
+            },
+            portrait,
+        ],
+    }
+    try:
+        with patch("app.services.material.requests.get", return_value=_Response(payload)):
+            item = material.resolve_pexels_video_url(
+                "https://www.pexels.com/video/space-12345/",
+                video_aspect=VideoAspect.portrait,
+            )
+        assert item.url == portrait["link"]
+    finally:
+        if original_keys is None:
+            config.app.pop("pexels_api_keys", None)
+        else:
+            config.app["pexels_api_keys"] = original_keys
+
+
 def test_manual_pexels_url_rejects_non_pexels_hosts():
     import pytest
 
