@@ -8135,7 +8135,7 @@ def _audio_is_approved(params, voice_mode, uploaded_audio_file):
     return True
 
 
-def _render_clip_approval_workflow(params, audio_ready):
+def _render_clip_approval_workflow(params, audio_ready, narration_duration=None):
     """Let users pick Pexels clips by URL, without rendering candidate previews."""
     source = params.video_source
     if source != "pexels":
@@ -8177,6 +8177,7 @@ def _render_clip_approval_workflow(params, audio_ready):
             "search for that scene. No candidate previews are shown."
         )
         url_values = []
+        duration_values = []
         for i, (sentence, term) in enumerate(terms):
             st.markdown(f"**Scene {i + 1} · {term}**")
             _, link_col = st.columns([1.3, 2.7], vertical_alignment="center")
@@ -8192,10 +8193,52 @@ def _render_clip_approval_workflow(params, audio_ready):
                 placeholder="https://www.pexels.com/video/...",
                 help="Optional. Paste the specific Pexels video page you want for this scene.",
             )
+            scene_duration = st.number_input(
+                "Scene duration (seconds)",
+                min_value=1,
+                max_value=120,
+                value=5,
+                step=1,
+                key=f"clip_custom_duration_{fingerprint[:12]}_{i}",
+                help="How long this selected video should appear in the final edit.",
+            )
             url_values.append(custom_url.strip())
+            duration_values.append(int(scene_duration))
+
+        total_scene_duration = sum(duration_values)
+        duration_covers_narration = True
+        if (
+            isinstance(narration_duration, (int, float))
+            and math.isfinite(narration_duration)
+            and narration_duration > 0
+        ):
+            required_scene_duration = narration_duration + float(
+                getattr(video, "_VIDEO_DURATION_SAFETY_MARGIN", 0.5)
+            )
+            duration_covers_narration = total_scene_duration >= required_scene_duration
+            st.caption(
+                f"Total selected scene duration: **{total_scene_duration}s** · "
+                f"Narration: **{narration_duration:.1f}s**"
+            )
+            if total_scene_duration < required_scene_duration:
+                st.warning(
+                    "Selected scene durations must cover the full narration plus a "
+                    "small rendering safety margin. Increase one or more scene durations."
+                )
+        else:
+            st.caption(
+                f"Total selected scene duration: **{total_scene_duration} seconds**"
+            )
 
         approval_signature = hashlib.sha256(
-            (fingerprint + json.dumps(url_values, ensure_ascii=False)).encode("utf-8")
+            (
+                fingerprint
+                + json.dumps(
+                    {"urls": url_values, "durations": duration_values},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            ).encode("utf-8")
         ).hexdigest()
         saved_paths = st.session_state.get("clip_approved_paths", [])
         approved = (
@@ -8225,7 +8268,7 @@ def _render_clip_approval_workflow(params, audio_ready):
             key="prepare_pexels_scene_clips_button",
             type="primary",
             use_container_width=True,
-            disabled=not audio_ready,
+            disabled=not audio_ready or not duration_covers_narration,
         ):
             review_id = st.session_state.get("clip_review_task_id") or str(uuid4())
             directory = utils.storage_dir("local_videos", create=True)
@@ -8233,8 +8276,8 @@ def _render_clip_approval_workflow(params, audio_ready):
             paths = []
             failed = False
 
-            for scene_no, ((sentence, term), custom_url) in enumerate(
-                zip(terms, url_values), start=1
+            for scene_no, ((sentence, term), custom_url, requested_duration) in enumerate(
+                zip(terms, url_values, duration_values), start=1
             ):
                 try:
                     if custom_url:
@@ -8274,6 +8317,18 @@ def _render_clip_approval_workflow(params, audio_ready):
                         )
                         provider_name = "pexels (automatic)"
 
+                    source_duration = float(getattr(item, "duration", 0) or 0)
+                    playback_speed = utils.normalize_clip_speed(params.video_clip_speed)
+                    if (
+                        source_duration > 0
+                        and requested_duration * playback_speed > source_duration + 0.05
+                    ):
+                        raise ValueError(
+                            f"This source is {source_duration:.1f}s long, but the scene "
+                            f"needs {requested_duration}s at {playback_speed:.2f}x speed. "
+                            "Choose a longer Pexels video or reduce the scene duration."
+                        )
+
                     path = material.save_video(item.url, save_dir=directory)
                     if not path or not os.path.isfile(path) or os.path.getsize(path) <= 0:
                         raise OSError("The downloaded video file is empty.")
@@ -8281,6 +8336,7 @@ def _render_clip_approval_workflow(params, audio_ready):
                         {
                             "path": path,
                             "duration": int(getattr(item, "duration", 0) or 0),
+                            "requested_duration": requested_duration,
                             "provider": provider_name,
                             "asset_id": str(source_info.get("asset_id") or ""),
                             "source_page": str(
@@ -8326,6 +8382,7 @@ def _render_clip_approval_workflow(params, audio_ready):
                                         "asset_id": item.get("asset_id", ""),
                                         "source_page": item.get("source_page", ""),
                                         "duration": item.get("duration", 0),
+                                        "requested_duration": item.get("requested_duration", 5),
                                         "file": os.path.basename(item["path"]),
                                     }
                                     for i, item in enumerate(paths)
@@ -8411,13 +8468,62 @@ def _render_generation_controls(
         st.info("Approve the uploaded narration before searching for clips or generating a video.")
 
     review_source = params.video_source
-    clip_ready = _render_clip_approval_workflow(params, audio_ready)
+    narration_duration = None
+    if voice_mode == VOICE_MODE_TTS:
+        cached_voice = st.session_state.get("voice_preview_audio") or {}
+        if (
+            cached_voice.get("preview_type") == "full"
+            and _get_reusable_full_voice_preview(params, voice_mode)
+        ):
+            narration_duration = cached_voice.get("duration")
+    elif voice_mode == VOICE_MODE_UPLOAD and uploaded_audio_file:
+        try:
+            audio_digest = hashlib.sha256(
+                bytes(uploaded_audio_file.getbuffer())
+            ).hexdigest()
+            cached_upload_duration = st.session_state.get(
+                "clip_review_uploaded_audio_duration", {}
+            )
+            if cached_upload_duration.get("digest") == audio_digest:
+                narration_duration = cached_upload_duration.get("duration")
+            else:
+                temporary_audio_path = None
+                audio_clip = None
+                try:
+                    suffix = Path(uploaded_audio_file.name).suffix or ".mp3"
+                    with tempfile.NamedTemporaryFile(
+                        suffix=suffix, delete=False
+                    ) as temporary_audio:
+                        temporary_audio.write(uploaded_audio_file.getbuffer())
+                        temporary_audio_path = temporary_audio.name
+                    audio_clip = video.AudioFileClip(temporary_audio_path)
+                    narration_duration = float(audio_clip.duration)
+                finally:
+                    if audio_clip is not None:
+                        video.close_clip(audio_clip)
+                    if temporary_audio_path and os.path.exists(temporary_audio_path):
+                        os.unlink(temporary_audio_path)
+                st.session_state["clip_review_uploaded_audio_duration"] = {
+                    "digest": audio_digest,
+                    "duration": narration_duration,
+                }
+        except Exception as exc:
+            logger.debug(f"could not inspect uploaded narration duration: {exc}")
+            narration_duration = None
+    clip_ready = _render_clip_approval_workflow(
+        params, audio_ready, narration_duration=narration_duration
+    )
     approved_clip_payload = st.session_state.get("clip_approved_paths", []) if clip_ready and review_source in ("pexels", "pixabay") else []
     if approved_clip_payload:
         has_local_materials = True
         params.video_source = "local"
         params.video_materials = [
-            MaterialInfo(provider="local", url=item["path"], duration=int(item.get("duration", 0) or 0))
+            MaterialInfo(
+                provider="local",
+                url=item["path"],
+                duration=int(item.get("requested_duration", 5) or 5),
+                source_info={"manual_scene_duration": True},
+            )
             for item in approved_clip_payload
         ]
         if params.match_materials_to_script:
@@ -8766,7 +8872,9 @@ def _render_generation_controls(
             # 将已上传并保存到本地的视频素材写入会话，供后续只改文案时直接复用。
             st.session_state["local_video_materials"] = persisted_local_materials
         elif (
-            params.video_source == "local" and st.session_state["local_video_materials"]
+            params.video_source == "local"
+            and st.session_state["local_video_materials"]
+            and not approved_clip_payload
         ):
             # 当用户没有重新上传文件时，复用最近一次已经保存到磁盘的本地素材列表。
             params.video_materials = []

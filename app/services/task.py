@@ -735,6 +735,9 @@ def get_video_materials(
             clip_duration=params.video_clip_duration,
             image_motion=params.image_motion,
         )
+        # Keep the validated materials (and their per-scene duration metadata) in
+        # the same order as the returned paths for the final assembly stage.
+        params.video_materials = materials
         if not materials:
             _mark_task_failed(
                 task_id,
@@ -1000,9 +1003,29 @@ def generate_final_videos(
             videos=final_video_paths, combined_videos=combined_video_paths,
             warnings=warnings,
         )
-    allocate_batch_materials = params.video_count > 1 and params.video_source in {
-        "pexels", "pixabay", "coverr", "local"
-    }
+    manual_scene_durations = None
+    if params.video_source == "local" and params.video_materials:
+        material_metadata = [
+            item.source_info if isinstance(item.source_info, dict) else {}
+            for item in params.video_materials
+        ]
+        manual_scene_flags = [
+            item.get("manual_scene_duration") is True for item in material_metadata
+        ]
+        if any(manual_scene_flags) and not all(manual_scene_flags):
+            raise ValueError(
+                "Manual scene timing metadata is incomplete; prepare the Pexels scene clips again."
+            )
+        if material_metadata and all(manual_scene_flags):
+            manual_scene_durations = [
+                float(item.duration) for item in params.video_materials
+            ]
+
+    allocate_batch_materials = (
+        params.video_count > 1
+        and params.video_source in {"pexels", "pixabay", "coverr", "local"}
+        and manual_scene_durations is None
+    )
     source_usage = {}
     material_selections = []
     source_groups = (
@@ -1017,7 +1040,7 @@ def generate_final_videos(
         and bgm_service.should_use_bgm(params.bgm_type, params.bgm_volume)
     )
     # Matching preserves keyword order; batch allocation varies each keyword's candidates.
-    if params.match_materials_to_script:
+    if manual_scene_durations is not None or params.match_materials_to_script:
         video_concat_mode = VideoConcatMode.sequential
     elif params.video_count == 1:
         video_concat_mode = params.video_concat_mode
@@ -1057,6 +1080,7 @@ def generate_final_videos(
             max_clip_duration=params.video_clip_duration,
             threads=params.n_threads,
             clip_speed=params.video_clip_speed,
+            clip_durations=manual_scene_durations,
             progress_callback=_stage_progress_reporter(
                 task_id, _progress, _progress + combine_share
             ),
