@@ -8206,7 +8206,26 @@ def _render_clip_approval_workflow(params, audio_ready):
             duration_values.append(int(scene_duration))
 
         total_scene_duration = sum(duration_values)
-        st.caption(f"Total selected scene duration: **{total_scene_duration} seconds**")
+        cached_voice = st.session_state.get("voice_preview_audio") or {}
+        narration_duration = cached_voice.get("duration")
+        if (
+            isinstance(narration_duration, (int, float))
+            and math.isfinite(narration_duration)
+            and narration_duration > 0
+        ):
+            st.caption(
+                f"Total selected scene duration: **{total_scene_duration}s** · "
+                f"Narration: **{narration_duration:.1f}s**"
+            )
+            if total_scene_duration < narration_duration:
+                st.warning(
+                    "Selected scene durations are shorter than the narration. "
+                    "Increase one or more scene durations before preparing the clips."
+                )
+        else:
+            st.caption(
+                f"Total selected scene duration: **{total_scene_duration} seconds**"
+            )
 
         approval_signature = hashlib.sha256(
             (
