@@ -519,6 +519,7 @@ def resolve_pexels_video_url(
 
     aspect = VideoAspect(video_aspect)
     target_width, target_height = aspect.to_resolution()
+    target_ratio = target_width / target_height
     renditions = []
     for rendition in payload.get("video_files", []):
         if not isinstance(rendition, dict):
@@ -528,18 +529,55 @@ def resolve_pexels_video_url(
         except (TypeError, ValueError, OverflowError):
             continue
         link = rendition.get("link")
-        if (
-            isinstance(link, str)
-            and link
-            and (aspect == VideoAspect.square or _matches_video_aspect(width, height, aspect))
-            and width >= target_width
-            and height >= target_height
-        ):
-            renditions.append((width * height, rendition, width, height, link))
-    if not renditions:
-        raise ValueError(f"No Pexels rendition is available for {aspect.value} output.")
+        if not isinstance(link, str) or not link or width <= 0 or height <= 0:
+            continue
 
-    _, rendition, width, height, video_url = min(renditions, key=lambda item: item[0])
+        # The final renderer uses cover mode and crops around the center. Work
+        # out the source pixels that will remain after that crop so a landscape
+        # Pexels upload can be used for portrait output (and vice versa).
+        source_ratio = width / height
+        if source_ratio >= target_ratio:
+            crop_width = int(round(height * target_ratio))
+            crop_height = height
+        else:
+            crop_width = width
+            crop_height = int(round(width / target_ratio))
+
+        # Do not accept tiny sources just because cover mode could upscale them.
+        if not video.is_material_resolution_acceptable(crop_width, crop_height):
+            continue
+
+        matches_orientation = (
+            aspect == VideoAspect.square
+            or _matches_video_aspect(width, height, aspect)
+        )
+        renditions.append(
+            (
+                not matches_orientation,
+                crop_width * crop_height,
+                width * height,
+                rendition,
+                width,
+                height,
+                link,
+            )
+        )
+    if not renditions:
+        raise ValueError(
+            f"No Pexels rendition has enough resolution for a centered {aspect.value} crop."
+        )
+
+    # Prefer a native-orientation rendition when available. Otherwise use the
+    # smallest rendition whose centered crop still has acceptable resolution.
+    (
+        _,
+        _,
+        _,
+        rendition,
+        width,
+        height,
+        video_url,
+    ) = min(renditions, key=lambda item: (item[0], item[1], item[2]))
     item = MaterialInfo()
     item.provider = "pexels"
     item.url = video_url
