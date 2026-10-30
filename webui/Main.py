@@ -8174,8 +8174,42 @@ def _render_clip_approval_workflow(params, audio_ready, narration_duration=None)
         st.caption(
             "Open the Pexels search for each keyword, copy the page URL of the video "
             "you want, and paste it below. Leave a URL blank to use automatic Pexels "
-            "search for that scene. No candidate previews are shown."
+            "search for that scene. Set a scene to 0 seconds to skip it."
         )
+        # Key each widget by its keyword (and duplicate occurrence), not by its
+        # position or the complete keyword list. Editing one keyword therefore
+        # leaves every unchanged scene's URL and duration untouched.
+        occurrence_counts = {}
+        scene_widget_keys = []
+        for _, term in terms:
+            normalized_term = " ".join(str(term).casefold().split())
+            occurrence = occurrence_counts.get(normalized_term, 0)
+            occurrence_counts[normalized_term] = occurrence + 1
+            scene_digest = hashlib.sha256(
+                f"{normalized_term}\\0{occurrence}".encode("utf-8")
+            ).hexdigest()[:16]
+            scene_widget_keys.append(
+                (
+                    f"clip_custom_pexels_url_v2_{scene_digest}",
+                    f"clip_custom_duration_v2_{scene_digest}",
+                )
+            )
+
+        active_widget_keys = {
+            key for pair in scene_widget_keys for key in pair
+        }
+        for state_key in list(st.session_state.keys()):
+            if (
+                state_key.startswith("clip_custom_pexels_url_v2_")
+                or state_key.startswith("clip_custom_duration_v2_")
+            ) and state_key not in active_widget_keys:
+                # Removed keywords are discarded, not kept in a hidden history.
+                st.session_state.pop(state_key, None)
+            elif re.fullmatch(r"clip_custom_pexels_url_[0-9a-f]{12}_\\d+", state_key):
+                st.session_state.pop(state_key, None)
+            elif re.fullmatch(r"clip_custom_duration_[0-9a-f]{12}_\\d+", state_key):
+                st.session_state.pop(state_key, None)
+
         url_values = []
         duration_values = []
         for i, (sentence, term) in enumerate(terms):
@@ -8187,26 +8221,32 @@ def _render_clip_approval_workflow(params, audio_ready, narration_duration=None)
                     f"https://www.pexels.com/search/videos/{quote(term, safe='')}/",
                     use_container_width=True,
                 )
+            url_key, duration_key = scene_widget_keys[i]
             custom_url = st.text_input(
                 "Pexels video page URL",
-                key=f"clip_custom_pexels_url_{fingerprint[:12]}_{i}",
+                key=url_key,
                 placeholder="https://www.pexels.com/video/...",
                 help="Optional. Paste the specific Pexels video page you want for this scene.",
             )
             scene_duration = st.number_input(
                 "Scene duration (seconds)",
-                min_value=1,
-                max_value=120,
-                value=5,
-                step=1,
-                key=f"clip_custom_duration_{fingerprint[:12]}_{i}",
-                help="How long this selected video should appear in the final edit.",
+                min_value=0.0,
+                max_value=120.0,
+                value=5.0,
+                step=0.1,
+                format="%.1f",
+                key=duration_key,
+                help="Set to 0 to skip this keyword. Supports tenths of a second.",
             )
             url_values.append(custom_url.strip())
-            duration_values.append(int(scene_duration))
+            duration_values.append(round(float(scene_duration), 1))
 
         total_scene_duration = sum(duration_values)
-        duration_covers_narration = True
+        has_active_scenes = any(duration > 0 for duration in duration_values)
+        skipped_scene_count = sum(duration <= 0 for duration in duration_values)
+        if skipped_scene_count:
+            st.caption(f"Skipped scenes: **{skipped_scene_count}**")
+        duration_covers_narration = has_active_scenes
         if (
             isinstance(narration_duration, (int, float))
             and math.isfinite(narration_duration)
@@ -8279,6 +8319,12 @@ def _render_clip_approval_workflow(params, audio_ready, narration_duration=None)
             for scene_no, ((sentence, term), custom_url, requested_duration) in enumerate(
                 zip(terms, url_values, duration_values), start=1
             ):
+                if requested_duration <= 0:
+                    logger.info(
+                        f"skipping Pexels scene: scene={scene_no}, keyword={term!r}, "
+                        "reason=duration set to 0"
+                    )
+                    continue
                 try:
                     if custom_url:
                         item = material.resolve_pexels_video_url(
@@ -8337,6 +8383,7 @@ def _render_clip_approval_workflow(params, audio_ready, narration_duration=None)
                             "path": path,
                             "duration": int(getattr(item, "duration", 0) or 0),
                             "requested_duration": requested_duration,
+                            "scene_number": scene_no,
                             "provider": provider_name,
                             "asset_id": str(source_info.get("asset_id") or ""),
                             "source_page": str(
@@ -8361,6 +8408,8 @@ def _render_clip_approval_workflow(params, audio_ready, narration_duration=None)
                     failed = True
                     break
 
+            if not failed and not paths:
+                st.warning("All scenes are skipped. Set at least one scene duration above 0 seconds.")
             if not failed and paths:
                 try:
                     with open(
@@ -8375,7 +8424,7 @@ def _render_clip_approval_workflow(params, audio_ready, narration_duration=None)
                                 "source": source,
                                 "clips": [
                                     {
-                                        "scene": i + 1,
+                                        "scene": item.get("scene_number", i + 1),
                                         "sentence": item.get("sentence", ""),
                                         "search_term": item.get("search_term", ""),
                                         "provider": item.get("provider", source),
@@ -8521,7 +8570,7 @@ def _render_generation_controls(
             MaterialInfo(
                 provider="local",
                 url=item["path"],
-                duration=int(item.get("requested_duration", 5) or 5),
+                duration=float(item.get("requested_duration", 5) or 5),
                 source_info={"manual_scene_duration": True},
             )
             for item in approved_clip_payload
