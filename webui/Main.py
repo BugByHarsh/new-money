@@ -8206,6 +8206,7 @@ def _render_clip_approval_workflow(params, audio_ready, narration_duration=None)
             duration_values.append(int(scene_duration))
 
         total_scene_duration = sum(duration_values)
+        duration_covers_narration = True
         if (
             isinstance(narration_duration, (int, float))
             and math.isfinite(narration_duration)
@@ -8214,6 +8215,7 @@ def _render_clip_approval_workflow(params, audio_ready, narration_duration=None)
             required_scene_duration = narration_duration + float(
                 getattr(video, "_VIDEO_DURATION_SAFETY_MARGIN", 0.5)
             )
+            duration_covers_narration = total_scene_duration >= required_scene_duration
             st.caption(
                 f"Total selected scene duration: **{total_scene_duration}s** · "
                 f"Narration: **{narration_duration:.1f}s**"
@@ -8266,7 +8268,7 @@ def _render_clip_approval_workflow(params, audio_ready, narration_duration=None)
             key="prepare_pexels_scene_clips_button",
             type="primary",
             use_container_width=True,
-            disabled=not audio_ready,
+            disabled=not audio_ready or not duration_covers_narration,
         ):
             review_id = st.session_state.get("clip_review_task_id") or str(uuid4())
             directory = utils.storage_dir("local_videos", create=True)
