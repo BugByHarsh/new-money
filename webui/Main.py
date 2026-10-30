@@ -8211,14 +8211,17 @@ def _render_clip_approval_workflow(params, audio_ready, narration_duration=None)
             and math.isfinite(narration_duration)
             and narration_duration > 0
         ):
+            required_scene_duration = narration_duration + float(
+                getattr(video, "_VIDEO_DURATION_SAFETY_MARGIN", 0.5)
+            )
             st.caption(
                 f"Total selected scene duration: **{total_scene_duration}s** · "
                 f"Narration: **{narration_duration:.1f}s**"
             )
-            if total_scene_duration < narration_duration:
+            if total_scene_duration < required_scene_duration:
                 st.warning(
-                    "Selected scene durations are shorter than the narration. "
-                    "Increase one or more scene durations before preparing the clips."
+                    "Selected scene durations must cover the full narration plus a "
+                    "small rendering safety margin. Increase one or more scene durations."
                 )
         else:
             st.caption(
