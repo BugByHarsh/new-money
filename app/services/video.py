@@ -1056,22 +1056,23 @@ def combine_videos(
             requested_duration = float(clip_durations[video_index])
             if not math.isfinite(requested_duration) or requested_duration <= 0:
                 raise ValueError("Scene durations must be positive finite numbers.")
-            remaining_source_duration = requested_duration * normalized_clip_speed
-            # If a source is shorter than its requested scene duration, repeat that
-            # source from the beginning until the scene's assigned playback time is met.
-            while remaining_source_duration > 0:
-                segment_duration = min(clip_duration, remaining_source_duration)
-                subclipped_items.append(
-                    SubClippedVideoClip(
-                        file_path=video_path,
-                        start_time=0,
-                        end_time=segment_duration,
-                        width=clip_w,
-                        height=clip_h,
-                        source_file_path=video_path,
-                    )
+            required_source_duration = requested_duration * normalized_clip_speed
+            if required_source_duration > clip_duration + 0.05:
+                raise ValueError(
+                    f"Scene {video_index + 1} is set to {requested_duration:.1f}s, "
+                    f"but its selected source video is only {clip_duration / normalized_clip_speed:.1f}s "
+                    "at the current playback speed. Choose a longer source or reduce the scene duration."
                 )
-                remaining_source_duration -= segment_duration
+            subclipped_items.append(
+                SubClippedVideoClip(
+                    file_path=video_path,
+                    start_time=0,
+                    end_time=min(required_source_duration, clip_duration),
+                    width=clip_w,
+                    height=clip_h,
+                    source_file_path=video_path,
+                )
+            )
             continue
 
         start_time = 0
