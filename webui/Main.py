@@ -8177,6 +8177,7 @@ def _render_clip_approval_workflow(params, audio_ready):
             "search for that scene. No candidate previews are shown."
         )
         url_values = []
+        duration_values = []
         for i, (sentence, term) in enumerate(terms):
             st.markdown(f"**Scene {i + 1} · {term}**")
             _, link_col = st.columns([1.3, 2.7], vertical_alignment="center")
@@ -8192,10 +8193,30 @@ def _render_clip_approval_workflow(params, audio_ready):
                 placeholder="https://www.pexels.com/video/...",
                 help="Optional. Paste the specific Pexels video page you want for this scene.",
             )
+            scene_duration = st.number_input(
+                "Scene duration (seconds)",
+                min_value=1,
+                max_value=120,
+                value=5,
+                step=1,
+                key=f"clip_custom_duration_{fingerprint[:12]}_{i}",
+                help="How long this selected video should appear in the final edit.",
+            )
             url_values.append(custom_url.strip())
+            duration_values.append(int(scene_duration))
+
+        total_scene_duration = sum(duration_values)
+        st.caption(f"Total selected scene duration: **{total_scene_duration} seconds**")
 
         approval_signature = hashlib.sha256(
-            (fingerprint + json.dumps(url_values, ensure_ascii=False)).encode("utf-8")
+            (
+                fingerprint
+                + json.dumps(
+                    {"urls": url_values, "durations": duration_values},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            ).encode("utf-8")
         ).hexdigest()
         saved_paths = st.session_state.get("clip_approved_paths", [])
         approved = (
@@ -8233,8 +8254,8 @@ def _render_clip_approval_workflow(params, audio_ready):
             paths = []
             failed = False
 
-            for scene_no, ((sentence, term), custom_url) in enumerate(
-                zip(terms, url_values), start=1
+            for scene_no, ((sentence, term), custom_url, requested_duration) in enumerate(
+                zip(terms, url_values, duration_values), start=1
             ):
                 try:
                     if custom_url:
@@ -8281,6 +8302,7 @@ def _render_clip_approval_workflow(params, audio_ready):
                         {
                             "path": path,
                             "duration": int(getattr(item, "duration", 0) or 0),
+                            "requested_duration": requested_duration,
                             "provider": provider_name,
                             "asset_id": str(source_info.get("asset_id") or ""),
                             "source_page": str(
@@ -8326,6 +8348,7 @@ def _render_clip_approval_workflow(params, audio_ready):
                                         "asset_id": item.get("asset_id", ""),
                                         "source_page": item.get("source_page", ""),
                                         "duration": item.get("duration", 0),
+                                        "requested_duration": item.get("requested_duration", 5),
                                         "file": os.path.basename(item["path"]),
                                     }
                                     for i, item in enumerate(paths)
@@ -8417,7 +8440,12 @@ def _render_generation_controls(
         has_local_materials = True
         params.video_source = "local"
         params.video_materials = [
-            MaterialInfo(provider="local", url=item["path"], duration=int(item.get("duration", 0) or 0))
+            MaterialInfo(
+                provider="local",
+                url=item["path"],
+                duration=int(item.get("requested_duration", 5) or 5),
+                source_info={"manual_scene_duration": True},
+            )
             for item in approved_clip_payload
         ]
         if params.match_materials_to_script:
