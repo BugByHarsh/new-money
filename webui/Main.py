@@ -8317,6 +8317,18 @@ def _render_clip_approval_workflow(params, audio_ready, narration_duration=None)
                         )
                         provider_name = "pexels (automatic)"
 
+                    source_duration = float(getattr(item, "duration", 0) or 0)
+                    playback_speed = utils.normalize_clip_speed(params.video_clip_speed)
+                    if (
+                        source_duration > 0
+                        and requested_duration * playback_speed > source_duration + 0.05
+                    ):
+                        raise ValueError(
+                            f"This source is {source_duration:.1f}s long, but the scene "
+                            f"needs {requested_duration}s at {playback_speed:.2f}x speed. "
+                            "Choose a longer Pexels video or reduce the scene duration."
+                        )
+
                     path = material.save_video(item.url, save_dir=directory)
                     if not path or not os.path.isfile(path) or os.path.getsize(path) <= 0:
                         raise OSError("The downloaded video file is empty.")
